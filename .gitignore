@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AgentSurf local runtime
+.conda/
+.conda_home/
+.conda_pkgs/
+.pip_cache/
+.runtime/
