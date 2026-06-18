@@ -24,6 +24,11 @@ graph = [
 qwen = [
     "openai>=1.40",
 ]
+desktop = [
+    "psutil>=5.9",
+    "pyautogui>=0.9.54",
+    "pywinauto>=0.6.8",
+]
 dev = [
     "pytest>=8",
 ]

@@ -64,11 +64,11 @@ Write-Host "Using Python: $PythonPath"
 Invoke-Checked $PythonPath "--version"
 
 Write-Host "Upgrading pip, setuptools, and wheel..."
-Invoke-Checked $PythonPath "-m" "pip" "install" "--upgrade" "pip" "setuptools" "wheel"
+Invoke-Checked $PythonPath "-m" "pip" "install" "--no-cache-dir" "--upgrade" "pip" "setuptools" "wheel"
 
 Write-Host "Installing AgentSurf runtime dependencies..."
 try {
-    Invoke-Checked $PythonPath "-m" "pip" "install" "-e" ".[server,qwen]"
+    Invoke-Checked $PythonPath "-m" "pip" "install" "--no-cache-dir" "-e" ".[server,qwen,desktop]"
 }
 catch {
     Write-Host ""
@@ -80,6 +80,7 @@ catch {
 Write-Host "Verifying AgentSurf CLI commands..."
 Invoke-Checked $PythonPath "-m" "agentsurf.cli" "acp" "--help"
 Invoke-Checked $PythonPath "-m" "agentsurf.cli" "ezviz-agent" "--help"
+Invoke-Checked $PythonPath "-m" "agentsurf.cli" "ezviz-desktop" "--help"
 
 Write-Host ""
 Write-Host "AgentSurf installation is complete."

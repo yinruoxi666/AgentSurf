@@ -22,6 +22,8 @@ src/agentsurf/
   runtime.py        Interactive REPL runtime for the EZVIZ console agent
   schemas.py        Shared request, response, action, and observation models
   server.py         FastAPI browser tool service
+  tools/desktop_ezviz.py
+                    Windows desktop tool layer for ESEzvizClient
   tools/ezviz.py    Safe EZVIZ web-console tool layer
   vision.py         Screenshot vision analyzer interface and default analyzer
 tests/
@@ -55,7 +57,7 @@ agentsurf serve --host 127.0.0.1 --port 8000
 To enable Qwen routing through Alibaba Cloud Model Studio:
 
 ```powershell
-python -m pip install -e ".[server,qwen]"
+python -m pip install -e ".[server,qwen,desktop]"
 $env:DASHSCOPE_API_KEY="your-dashscope-api-key"
 $env:QWEN_MODEL="qwen-plus"
 $env:QWEN_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -130,7 +132,9 @@ Use this command in OpenClaw's custom ACP agent configuration:
     "acp",
     "--desktop-chrome",
     "--chrome-path",
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "--ezviz-exe-path",
+    "C:\\Program Files (x86)\\ESEzvizClient\\ESEzvizClient.exe"
   ]
 }
 ```
@@ -140,6 +144,23 @@ The ACP adapter supports `initialize`, `session/new`, `session/prompt`,
 browser agent and returned through `session/update` text chunks. Add `--headless`
 for non-visible smoke tests, or keep it omitted to let OpenClaw drive a visible
 Chrome profile at `.runtime/acp-profile`.
+
+## ESEzvizClient Desktop Agent
+
+Run this command to open ESEzvizClient and enter video monitor:
+
+```powershell
+.\.conda\agentsurf\Scripts\agentsurf.exe ezviz-desktop --open-video-monitor --exe-path "C:\Program Files (x86)\ESEzvizClient\ESEzvizClient.exe"
+```
+
+If the client shows login, captcha, terminal binding, or another blocking prompt,
+finish that step manually in the desktop app, then run the command again. V1 only
+opens the app and navigates to video monitor; it does not add/delete devices,
+change settings, or submit forms.
+
+If the client is running with higher Windows privileges or does not expose Qt
+controls to UI Automation, the command returns `requires_user_action` and asks
+you to click `视频监控` manually, or rerun AgentSurf/Codex as Administrator.
 
 ## EZVIZ Console Agent
 

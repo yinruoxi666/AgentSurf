@@ -11,6 +11,7 @@ from typing import Any
 from .agent import BrowserAgent, RuleBasedPlanner
 from .browser import BrowserSession, InMemoryBrowserSession, PlaywrightBrowserSession
 from .schemas import AgentState
+from .tools.desktop_ezviz import DEFAULT_EZVIZ_CLIENT_EXE, DesktopEzvizClientTools, is_ezviz_desktop_request
 from .vision import HeuristicVisionAnalyzer
 
 
@@ -34,12 +35,16 @@ class AcpAgentServer:
         profile_dir: str = ".runtime/acp-profile",
         headless: bool = True,
         max_steps: int = 8,
+        ezviz_exe_path: str = DEFAULT_EZVIZ_CLIENT_EXE,
+        desktop_tools_factory: Any | None = None,
     ) -> None:
         self.desktop_chrome = desktop_chrome
         self.chrome_path = chrome_path
         self.profile_dir = profile_dir
         self.headless = headless
         self.max_steps = max_steps
+        self.ezviz_exe_path = ezviz_exe_path
+        self.desktop_tools_factory = desktop_tools_factory
         self.sessions: dict[str, AcpSession] = {}
 
     async def run_stdio(self) -> None:
@@ -123,20 +128,15 @@ class AcpAgentServer:
         if not prompt:
             raise ValueError("session/prompt requires text content")
 
+        if is_ezviz_desktop_request(prompt):
+            result = await asyncio.to_thread(self._run_desktop_ezviz_prompt)
+            return [self._agent_message_update(session_id, self._summarize_desktop_result(result))], {
+                "stopReason": "end_turn"
+            }
+
         state = await session.agent.run(prompt, max_steps=self.max_steps)
         summary = self._summarize_state(state)
-        return [
-            self._notification(
-                "session/update",
-                {
-                    "sessionId": session_id,
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": summary},
-                    },
-                },
-            )
-        ], {"stopReason": "end_turn"}
+        return [self._agent_message_update(session_id, summary)], {"stopReason": "end_turn"}
 
     async def _close_session(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or params.get("session_id") or "")
@@ -202,6 +202,37 @@ class AcpAgentServer:
             lines.append(f"Actions: {actions}")
         return "\n".join(lines)
 
+    def _run_desktop_ezviz_prompt(self) -> dict[str, Any]:
+        if self.desktop_tools_factory is not None:
+            tools = self.desktop_tools_factory()
+        else:
+            tools = DesktopEzvizClientTools(exe_path=self.ezviz_exe_path)
+        return tools.open_video_monitor().to_dict()
+
+    def _summarize_desktop_result(self, result: dict[str, Any]) -> str:
+        return "\n".join(
+            [
+                f"Desktop EZVIZ status: {result.get('status')}",
+                f"Message: {result.get('message')}",
+                f"Requires user action: {result.get('requires_user_action')}",
+                f"Window title: {result.get('window_title')}",
+                f"Matched control: {result.get('matched_control')}",
+                f"Visible text: {result.get('visible_text_excerpt')}",
+            ]
+        )
+
+    def _agent_message_update(self, session_id: str, text: str) -> dict[str, Any]:
+        return self._notification(
+            "session/update",
+            {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": text},
+                },
+            },
+        )
+
     def _response(self, request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
         return {"jsonrpc": JSONRPC_VERSION, "id": request_id, "result": result}
 
@@ -223,6 +254,7 @@ async def run_acp_stdio(
     profile_dir: str,
     headless: bool,
     max_steps: int,
+    ezviz_exe_path: str,
 ) -> None:
     server = AcpAgentServer(
         desktop_chrome=desktop_chrome,
@@ -230,5 +262,6 @@ async def run_acp_stdio(
         profile_dir=profile_dir,
         headless=headless,
         max_steps=max_steps,
+        ezviz_exe_path=ezviz_exe_path,
     )
     await server.run_stdio()

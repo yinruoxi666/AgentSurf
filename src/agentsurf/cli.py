@@ -10,6 +10,7 @@ from .acp import run_acp_stdio
 from .agent import BrowserAgent, RuleBasedPlanner
 from .browser import InMemoryBrowserSession, PlaywrightBrowserSession
 from .runtime import run_ezviz_repl
+from .tools.desktop_ezviz import DEFAULT_EZVIZ_CLIENT_EXE, DesktopEzvizClientTools
 from .vision import HeuristicVisionAnalyzer
 
 
@@ -109,6 +110,17 @@ async def desktop_agent(
         await browser.close()
 
 
+async def ezviz_desktop(exe_path: str, open_video_monitor: bool, observe: bool) -> None:
+    tools = DesktopEzvizClientTools(exe_path=exe_path)
+    if open_video_monitor:
+        result = await asyncio.to_thread(tools.open_video_monitor)
+    elif observe:
+        result = await asyncio.to_thread(tools.observe_window)
+    else:
+        result = await asyncio.to_thread(tools.open_client)
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+
+
 def serve(
     host: str,
     port: int,
@@ -190,6 +202,15 @@ def build_parser() -> argparse.ArgumentParser:
     acp_parser.add_argument("--profile-dir", default=".runtime/acp-profile")
     acp_parser.add_argument("--headless", action="store_true")
     acp_parser.add_argument("--max-steps", type=int, default=8)
+    acp_parser.add_argument("--ezviz-exe-path", default=DEFAULT_EZVIZ_CLIENT_EXE)
+
+    ezviz_desktop_parser = subparsers.add_parser(
+        "ezviz-desktop",
+        help="Open ESEzvizClient and optionally enter video monitor",
+    )
+    ezviz_desktop_parser.add_argument("--exe-path", default=DEFAULT_EZVIZ_CLIENT_EXE)
+    ezviz_desktop_parser.add_argument("--open-video-monitor", action="store_true")
+    ezviz_desktop_parser.add_argument("--observe", action="store_true")
 
     return parser
 
@@ -236,8 +257,11 @@ def main() -> None:
                 profile_dir=args.profile_dir,
                 headless=args.headless or not args.desktop_chrome,
                 max_steps=args.max_steps,
+                ezviz_exe_path=args.ezviz_exe_path,
             )
         )
+    elif args.command == "ezviz-desktop":
+        asyncio.run(ezviz_desktop(args.exe_path, args.open_video_monitor, args.observe))
 
 
 if __name__ == "__main__":

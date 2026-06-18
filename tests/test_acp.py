@@ -8,6 +8,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agentsurf.acp import AcpAgentServer
+from agentsurf.tools.desktop_ezviz import DesktopToolResult
+
+
+class FakeDesktopTools:
+    def open_video_monitor(self) -> DesktopToolResult:
+        return DesktopToolResult(
+            status="ok",
+            message="Opened fake video monitor.",
+            window_title="EZVIZ",
+            matched_control="\u89c6\u9891\u76d1\u63a7",
+            visible_text_excerpt="\u89c6\u9891\u76d1\u63a7",
+        )
 
 
 class AcpAgentServerTest(unittest.IsolatedAsyncioTestCase):
@@ -77,6 +89,32 @@ class AcpAgentServerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(messages[0]["result"]["protocolVersion"], 1)
+
+    async def test_ezviz_desktop_prompt_routes_to_desktop_tool(self) -> None:
+        server = AcpAgentServer(desktop_tools_factory=FakeDesktopTools)
+        session_response = await server.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}})
+        session_id = session_response[0]["result"]["sessionId"]
+
+        messages = await server.handle_rpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": "\u6253\u5f00\u8424\u77f3\u5de5\u4f5c\u5ba4\u8fdb\u5165\u89c6\u9891\u76d1\u63a7",
+                        }
+                    ],
+                },
+            }
+        )
+
+        text = messages[0]["params"]["update"]["content"]["text"]
+        self.assertIn("Desktop EZVIZ status: ok", text)
+        self.assertIn("\u89c6\u9891\u76d1\u63a7", text)
 
 
 if __name__ == "__main__":

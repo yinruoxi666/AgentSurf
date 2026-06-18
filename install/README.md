@@ -8,6 +8,7 @@ integration.
 - AgentSurf editable package.
 - Browser server dependencies: FastAPI, Uvicorn, Playwright.
 - Qwen/OpenAI-compatible SDK dependency: OpenAI Python SDK.
+- Windows desktop automation dependencies: pywinauto, pyautogui, psutil.
 - `agentsurf` CLI entry point.
 
 It does not install Python, OpenClaw, Chrome, or Playwright bundled browsers.
@@ -52,7 +53,9 @@ Use this command in OpenClaw's custom ACP agent configuration:
     "acp",
     "--desktop-chrome",
     "--chrome-path",
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "--ezviz-exe-path",
+    "C:\\Program Files (x86)\\ESEzvizClient\\ESEzvizClient.exe"
   ]
 }
 ```
@@ -88,6 +91,7 @@ $env:QWEN_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 ```powershell
 agentsurf acp --help
 agentsurf ezviz-agent --help
+agentsurf ezviz-desktop --help
 python -m unittest discover -s tests -v
 ```
 
