@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from .acp import run_acp_stdio
 from .agent import BrowserAgent, RuleBasedPlanner
 from .browser import InMemoryBrowserSession, PlaywrightBrowserSession
 from .runtime import run_ezviz_repl
@@ -183,6 +184,13 @@ def build_parser() -> argparse.ArgumentParser:
     ezviz_parser.add_argument("--headless", action="store_true")
     ezviz_parser.add_argument("--verbose", action="store_true")
 
+    acp_parser = subparsers.add_parser("acp", help="Run an ACP stdio agent for OpenClaw integration")
+    acp_parser.add_argument("--desktop-chrome", action="store_true")
+    acp_parser.add_argument("--chrome-path")
+    acp_parser.add_argument("--profile-dir", default=".runtime/acp-profile")
+    acp_parser.add_argument("--headless", action="store_true")
+    acp_parser.add_argument("--max-steps", type=int, default=8)
+
     return parser
 
 
@@ -218,6 +226,16 @@ def main() -> None:
                 qwen_base_url=args.qwen_base_url,
                 headless=args.headless,
                 verbose=args.verbose,
+            )
+        )
+    elif args.command == "acp":
+        asyncio.run(
+            run_acp_stdio(
+                desktop_chrome=args.desktop_chrome,
+                chrome_path=args.chrome_path,
+                profile_dir=args.profile_dir,
+                headless=args.headless or not args.desktop_chrome,
+                max_steps=args.max_steps,
             )
         )
 

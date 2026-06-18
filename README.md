@@ -13,6 +13,7 @@ documents in `需求/`. It models the requested architecture:
 
 ```text
 src/agentsurf/
+  acp.py            ACP stdio agent adapter for OpenClaw integration
   agent.py          Planner and browser-agent control loop
   browser.py        Browser tool interface, in-memory session, Playwright session
   cli.py            Command-line interface
@@ -110,6 +111,35 @@ To expose the same visible Chrome session through the FastAPI server:
 ```powershell
 .\.conda\agentsurf\Scripts\agentsurf.exe serve --desktop-chrome --chrome-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
+
+## OpenClaw ACP Agent
+
+AgentSurf can also run as an ACP stdio agent so OpenClaw can launch it as an
+external agent/harness:
+
+```powershell
+.\.conda\agentsurf\Scripts\agentsurf.exe acp --desktop-chrome --chrome-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
+```
+
+Use this command in OpenClaw's custom ACP agent configuration:
+
+```json
+{
+  "command": "C:\\Users\\yinruoxi\\Documents\\Codex\\AgentSurf\\.conda\\agentsurf\\Scripts\\agentsurf.exe",
+  "args": [
+    "acp",
+    "--desktop-chrome",
+    "--chrome-path",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+  ]
+}
+```
+
+The ACP adapter supports `initialize`, `session/new`, `session/prompt`,
+`session/cancel`, and `session/close`. Prompt text is executed by the AgentSurf
+browser agent and returned through `session/update` text chunks. Add `--headless`
+for non-visible smoke tests, or keep it omitted to let OpenClaw drive a visible
+Chrome profile at `.runtime/acp-profile`.
 
 ## EZVIZ Console Agent
 
