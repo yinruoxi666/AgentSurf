@@ -92,7 +92,22 @@ class QwenClient:
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_key or self._client)
+        return self.config_error is None
+
+    @property
+    def config_error(self) -> str | None:
+        if self._client is not None:
+            return None
+        if not self.api_key:
+            return "DASHSCOPE_API_KEY is required for Qwen. Set DASHSCOPE_API_KEY or pass a mock client."
+        try:
+            self.api_key.encode("ascii")
+        except UnicodeEncodeError:
+            return (
+                "DASHSCOPE_API_KEY must be the real ASCII DashScope API key. "
+                "It looks like a non-ASCII placeholder was used; replace it with your actual key."
+            )
+        return None
 
     def route(self, user_input: str, context: str = "") -> RouteDecision:
         response = self._completion(
@@ -114,6 +129,55 @@ class QwenClient:
             ]
         )
 
+    def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | dict[str, Any] = "auto",
+    ) -> Any:
+        client = self._get_client()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=0,
+        )
+        return response.choices[0].message
+
+    def summarize_tool_result(
+        self,
+        *,
+        user_input: str,
+        tool_name: str,
+        tool_result: dict[str, Any],
+        context: str = "",
+    ) -> str:
+        return self._completion(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是 AgentSurf，一个简洁、自然的中文桌面智能体。"
+                        "根据工具调用结果回复用户。不要输出 JSON；"
+                        "如果 requires_user_action 为 true，要明确告诉用户需要手动处理什么；"
+                        "如果 status 是 ok，要说明已经完成；"
+                        "如果 status 是 not_confirmed 或 not_found，要说明未能确认或未找到。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"用户请求：{user_input}\n"
+                        f"工具名称：{tool_name}\n"
+                        f"上下文：{context}\n"
+                        f"工具结果：{json.dumps(tool_result, ensure_ascii=False)}"
+                    ),
+                },
+            ]
+        )
+
     def _completion(self, messages: list[dict[str, str]]) -> str:
         client = self._get_client()
         response = client.chat.completions.create(
@@ -126,10 +190,9 @@ class QwenClient:
     def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
-        if not self.api_key:
-            raise QwenConfigError(
-                "DASHSCOPE_API_KEY is required for Qwen. Set DASHSCOPE_API_KEY or pass a mock client."
-            )
+        config_error = self.config_error
+        if config_error is not None:
+            raise QwenConfigError(config_error)
         try:
             from openai import OpenAI
         except ModuleNotFoundError as exc:

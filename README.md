@@ -153,9 +153,29 @@ Run this command to open ESEzvizClient and enter video monitor:
 .\.conda\agentsurf\Scripts\agentsurf.exe ezviz-desktop --open-video-monitor --exe-path "C:\Program Files (x86)\ESEzvizClient\ESEzvizClient.exe"
 ```
 
+Open a video monitor sub-page directly:
+
+```powershell
+.\.conda\agentsurf\Scripts\agentsurf.exe ezviz-desktop --section playback --exe-path "C:\Program Files (x86)\ESEzvizClient\ESEzvizClient.exe"
+```
+
+Supported sections are `preview`, `playback`, `messages`, and
+`terminal_config`. Natural-language ACP prompts such as `打开回放`,
+`看告警消息`, and `进入终端配置` route to the same desktop tools.
+
+Run the Qwen tool-calling desktop agent for natural conversation:
+
+```powershell
+.\.conda\agentsurf\Scripts\agentsurf.exe ezviz-desktop-agent --exe-path "C:\Program Files (x86)\ESEzvizClient\ESEzvizClient.exe"
+```
+
+Set `DASHSCOPE_API_KEY` to let Qwen choose one of the desktop function calls
+and generate the final natural-language reply. If Qwen is not configured, the
+agent falls back to local routing for the same navigation tools.
+
 If the client shows login, captcha, terminal binding, or another blocking prompt,
 finish that step manually in the desktop app, then run the command again. V1 only
-opens the app and navigates to video monitor; it does not add/delete devices,
+opens the app and navigates video monitor pages; it does not add/delete devices,
 change settings, or submit forms.
 
 If the client is running with higher Windows privileges or does not expose Qt

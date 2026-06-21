@@ -19,7 +19,41 @@ class FakeDesktopTools:
             window_title="EZVIZ",
             matched_control="\u89c6\u9891\u76d1\u63a7",
             visible_text_excerpt="\u89c6\u9891\u76d1\u63a7",
+            data={"tool_name": "open_video_monitor"},
         )
+
+    def open_video_monitor_section(self, section: str) -> DesktopToolResult:
+        return DesktopToolResult(
+            status="ok",
+            message=f"Opened fake section: {section}.",
+            window_title="EZVIZ",
+            matched_control=section,
+            visible_text_excerpt="\u9884\u89c8\n\u56de\u653e\n\u6d88\u606f\n\u7ec8\u7aef\u914d\u7f6e",
+            data={"tool_name": "open_video_monitor_section", "section": section},
+        )
+
+
+class FakeQwen:
+    def __init__(self, tool_name: str, reply: str) -> None:
+        self.tool_name = tool_name
+        self.reply = reply
+        self.is_configured = True
+
+    def chat_with_tools(self, messages, tools, *, tool_choice="auto"):
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": self.tool_name,
+                        "arguments": "{}",
+                    }
+                }
+            ],
+        }
+
+    def summarize_tool_result(self, **kwargs):
+        return self.reply
 
 
 class AcpAgentServerTest(unittest.IsolatedAsyncioTestCase):
@@ -91,7 +125,10 @@ class AcpAgentServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0]["result"]["protocolVersion"], 1)
 
     async def test_ezviz_desktop_prompt_routes_to_desktop_tool(self) -> None:
-        server = AcpAgentServer(desktop_tools_factory=FakeDesktopTools)
+        server = AcpAgentServer(
+            desktop_tools_factory=FakeDesktopTools,
+            desktop_qwen_factory=lambda: FakeQwen("open_video_monitor", "\u5df2\u6253\u5f00\u89c6\u9891\u76d1\u63a7\u3002"),
+        )
         session_response = await server.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}})
         session_id = session_response[0]["result"]["sessionId"]
 
@@ -113,8 +150,30 @@ class AcpAgentServerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         text = messages[0]["params"]["update"]["content"]["text"]
-        self.assertIn("Desktop EZVIZ status: ok", text)
-        self.assertIn("\u89c6\u9891\u76d1\u63a7", text)
+        self.assertEqual(text, "\u5df2\u6253\u5f00\u89c6\u9891\u76d1\u63a7\u3002")
+
+    async def test_ezviz_section_prompt_routes_to_section_tool(self) -> None:
+        server = AcpAgentServer(
+            desktop_tools_factory=FakeDesktopTools,
+            desktop_qwen_factory=lambda: FakeQwen("open_video_playback", "\u5df2\u8fdb\u5165\u56de\u653e\u9875\u9762\u3002"),
+        )
+        session_response = await server.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {}})
+        session_id = session_response[0]["result"]["sessionId"]
+
+        messages = await server.handle_rpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "content": {"type": "text", "text": "\u6253\u5f00\u56de\u653e"},
+                },
+            }
+        )
+
+        text = messages[0]["params"]["update"]["content"]["text"]
+        self.assertEqual(text, "\u5df2\u8fdb\u5165\u56de\u653e\u9875\u9762\u3002")
 
 
 if __name__ == "__main__":

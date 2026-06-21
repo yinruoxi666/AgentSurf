@@ -46,13 +46,14 @@ class FakeBrowser:
 
 
 class FakeMessage:
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, tool_calls: list | None = None) -> None:
         self.content = content
+        self.tool_calls = tool_calls or []
 
 
 class FakeChoice:
-    def __init__(self, content: str) -> None:
-        self.message = FakeMessage(content)
+    def __init__(self, content: str | FakeMessage) -> None:
+        self.message = content if isinstance(content, FakeMessage) else FakeMessage(content)
 
 
 class FakeResponse:
@@ -80,6 +81,21 @@ class FakeOpenAIClient:
         self.chat = FakeChat(content)
 
 
+class FakeOpenAIToolClient:
+    def __init__(self, message: FakeMessage) -> None:
+        self.chat = type("FakeChat", (), {"completions": FakeToolCompletions(message)})()
+
+
+class FakeToolCompletions:
+    def __init__(self, message: FakeMessage) -> None:
+        self.message = message
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return type("FakeResponse", (), {"choices": [FakeChoice(self.message)]})()
+
+
 class QwenClientTest(unittest.TestCase):
     def test_missing_api_key_raises_clear_error(self) -> None:
         client = QwenClient(api_key="", client=None)
@@ -88,6 +104,20 @@ class QwenClientTest(unittest.TestCase):
             client.chat("hello")
 
         self.assertIn("DASHSCOPE_API_KEY", str(context.exception))
+
+    def test_non_ascii_api_key_raises_clear_error(self) -> None:
+        client = QwenClient(api_key="\u4f60\u7684\u5343\u95eeKey", client=None)
+
+        with self.assertRaises(QwenConfigError) as context:
+            client.chat("hello")
+
+        self.assertIn("real ASCII DashScope API key", str(context.exception))
+
+    def test_non_ascii_api_key_is_not_configured(self) -> None:
+        client = QwenClient(api_key="\u4f60\u7684\u5343\u95eeKey", client=None)
+
+        self.assertFalse(client.is_configured)
+        self.assertIn("real ASCII DashScope API key", client.config_error or "")
 
     def test_mock_client_routes_to_tool_json(self) -> None:
         client = QwenClient(
@@ -100,6 +130,24 @@ class QwenClientTest(unittest.TestCase):
 
         self.assertEqual(decision.mode, "tool")
         self.assertEqual(decision.tool_name, "ezviz_open_console")
+
+    def test_chat_with_tools_passes_openai_tool_schema(self) -> None:
+        fake_client = FakeOpenAIToolClient(
+            FakeMessage(
+                "",
+                tool_calls=[{"function": {"name": "open_video_playback", "arguments": "{}"}}],
+            )
+        )
+        client = QwenClient(client=fake_client)
+
+        message = client.chat_with_tools(
+            [{"role": "user", "content": "\u6253\u5f00\u56de\u653e"}],
+            [{"type": "function", "function": {"name": "open_video_playback"}}],
+        )
+
+        self.assertEqual(message.tool_calls[0]["function"]["name"], "open_video_playback")
+        self.assertEqual(fake_client.chat.completions.calls[0]["tool_choice"], "auto")
+        self.assertEqual(fake_client.chat.completions.calls[0]["tools"][0]["function"]["name"], "open_video_playback")
 
 
 class LocalIntentRouterTest(unittest.TestCase):

@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .desktop_runtime import DesktopEzvizAgentRuntime
+from .llm import QwenClient
 from .agent import BrowserAgent, RuleBasedPlanner
 from .browser import BrowserSession, InMemoryBrowserSession, PlaywrightBrowserSession
 from .schemas import AgentState
-from .tools.desktop_ezviz import DEFAULT_EZVIZ_CLIENT_EXE, DesktopEzvizClientTools, is_ezviz_desktop_request
+from .tools.desktop_ezviz import DEFAULT_EZVIZ_CLIENT_EXE, DesktopEzvizClientTools, detect_ezviz_desktop_tool
 from .vision import HeuristicVisionAnalyzer
 
 
@@ -37,6 +39,9 @@ class AcpAgentServer:
         max_steps: int = 8,
         ezviz_exe_path: str = DEFAULT_EZVIZ_CLIENT_EXE,
         desktop_tools_factory: Any | None = None,
+        qwen_model: str | None = None,
+        qwen_base_url: str | None = None,
+        desktop_qwen_factory: Any | None = None,
     ) -> None:
         self.desktop_chrome = desktop_chrome
         self.chrome_path = chrome_path
@@ -45,6 +50,9 @@ class AcpAgentServer:
         self.max_steps = max_steps
         self.ezviz_exe_path = ezviz_exe_path
         self.desktop_tools_factory = desktop_tools_factory
+        self.qwen_model = qwen_model
+        self.qwen_base_url = qwen_base_url
+        self.desktop_qwen_factory = desktop_qwen_factory
         self.sessions: dict[str, AcpSession] = {}
 
     async def run_stdio(self) -> None:
@@ -128,11 +136,10 @@ class AcpAgentServer:
         if not prompt:
             raise ValueError("session/prompt requires text content")
 
-        if is_ezviz_desktop_request(prompt):
-            result = await asyncio.to_thread(self._run_desktop_ezviz_prompt)
-            return [self._agent_message_update(session_id, self._summarize_desktop_result(result))], {
-                "stopReason": "end_turn"
-            }
+        desktop_tool_call = detect_ezviz_desktop_tool(prompt)
+        if desktop_tool_call is not None:
+            reply = await asyncio.to_thread(self._run_desktop_ezviz_prompt, prompt)
+            return [self._agent_message_update(session_id, reply)], {"stopReason": "end_turn"}
 
         state = await session.agent.run(prompt, max_steps=self.max_steps)
         summary = self._summarize_state(state)
@@ -202,12 +209,22 @@ class AcpAgentServer:
             lines.append(f"Actions: {actions}")
         return "\n".join(lines)
 
-    def _run_desktop_ezviz_prompt(self) -> dict[str, Any]:
+    def _run_desktop_ezviz_prompt(self, prompt: str) -> str:
+        runtime = DesktopEzvizAgentRuntime(
+            tools=self._create_desktop_tools(),
+            qwen=self._create_desktop_qwen(),
+        )
+        return runtime.handle_message(prompt)
+
+    def _create_desktop_tools(self) -> DesktopEzvizClientTools:
         if self.desktop_tools_factory is not None:
-            tools = self.desktop_tools_factory()
-        else:
-            tools = DesktopEzvizClientTools(exe_path=self.ezviz_exe_path)
-        return tools.open_video_monitor().to_dict()
+            return self.desktop_tools_factory()
+        return DesktopEzvizClientTools(exe_path=self.ezviz_exe_path)
+
+    def _create_desktop_qwen(self) -> QwenClient:
+        if self.desktop_qwen_factory is not None:
+            return self.desktop_qwen_factory()
+        return QwenClient(model=self.qwen_model, base_url=self.qwen_base_url)
 
     def _summarize_desktop_result(self, result: dict[str, Any]) -> str:
         return "\n".join(
@@ -218,6 +235,7 @@ class AcpAgentServer:
                 f"Window title: {result.get('window_title')}",
                 f"Matched control: {result.get('matched_control')}",
                 f"Visible text: {result.get('visible_text_excerpt')}",
+                f"Data: {json.dumps(result.get('data') or {}, ensure_ascii=False)}",
             ]
         )
 
@@ -255,6 +273,8 @@ async def run_acp_stdio(
     headless: bool,
     max_steps: int,
     ezviz_exe_path: str,
+    qwen_model: str | None,
+    qwen_base_url: str | None,
 ) -> None:
     server = AcpAgentServer(
         desktop_chrome=desktop_chrome,
@@ -263,5 +283,7 @@ async def run_acp_stdio(
         headless=headless,
         max_steps=max_steps,
         ezviz_exe_path=ezviz_exe_path,
+        qwen_model=qwen_model,
+        qwen_base_url=qwen_base_url,
     )
     await server.run_stdio()

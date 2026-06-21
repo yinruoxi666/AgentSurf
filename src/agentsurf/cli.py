@@ -9,6 +9,8 @@ from pathlib import Path
 from .acp import run_acp_stdio
 from .agent import BrowserAgent, RuleBasedPlanner
 from .browser import InMemoryBrowserSession, PlaywrightBrowserSession
+from .debug_logging import DebugLogger
+from .desktop_runtime import run_desktop_ezviz_repl
 from .runtime import run_ezviz_repl
 from .tools.desktop_ezviz import DEFAULT_EZVIZ_CLIENT_EXE, DesktopEzvizClientTools
 from .vision import HeuristicVisionAnalyzer
@@ -110,14 +112,50 @@ async def desktop_agent(
         await browser.close()
 
 
-async def ezviz_desktop(exe_path: str, open_video_monitor: bool, observe: bool) -> None:
-    tools = DesktopEzvizClientTools(exe_path=exe_path)
-    if open_video_monitor:
+def create_debug_logger(debug: bool, debug_log_path: str | None) -> DebugLogger | None:
+    if not debug:
+        return None
+    logger = DebugLogger(path=debug_log_path)
+    logger.log("debug.enabled", {"log_path": str(logger.path)})
+    return logger
+
+
+async def ezviz_desktop(
+    exe_path: str,
+    open_video_monitor: bool,
+    observe: bool,
+    section: str | None,
+    debug_logger: DebugLogger | None = None,
+) -> None:
+    if debug_logger is not None:
+        debug_logger.log(
+            "ezviz_desktop.start",
+            {
+                "exe_path": exe_path,
+                "open_video_monitor": open_video_monitor,
+                "observe": observe,
+                "section": section,
+            },
+        )
+    tools = DesktopEzvizClientTools(exe_path=exe_path, debug_logger=debug_logger)
+    if section:
+        if debug_logger is not None:
+            debug_logger.log("ezviz_desktop.dispatch", {"tool": "open_video_monitor_section", "section": section})
+        result = await asyncio.to_thread(tools.open_video_monitor_section, section)
+    elif open_video_monitor:
+        if debug_logger is not None:
+            debug_logger.log("ezviz_desktop.dispatch", {"tool": "open_video_monitor"})
         result = await asyncio.to_thread(tools.open_video_monitor)
     elif observe:
+        if debug_logger is not None:
+            debug_logger.log("ezviz_desktop.dispatch", {"tool": "observe_window"})
         result = await asyncio.to_thread(tools.observe_window)
     else:
+        if debug_logger is not None:
+            debug_logger.log("ezviz_desktop.dispatch", {"tool": "open_client"})
         result = await asyncio.to_thread(tools.open_client)
+    if debug_logger is not None:
+        debug_logger.log("ezviz_desktop.result", result.to_dict())
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
 
 
@@ -203,6 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
     acp_parser.add_argument("--headless", action="store_true")
     acp_parser.add_argument("--max-steps", type=int, default=8)
     acp_parser.add_argument("--ezviz-exe-path", default=DEFAULT_EZVIZ_CLIENT_EXE)
+    acp_parser.add_argument("--qwen-model")
+    acp_parser.add_argument("--qwen-base-url")
 
     ezviz_desktop_parser = subparsers.add_parser(
         "ezviz-desktop",
@@ -210,7 +250,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ezviz_desktop_parser.add_argument("--exe-path", default=DEFAULT_EZVIZ_CLIENT_EXE)
     ezviz_desktop_parser.add_argument("--open-video-monitor", action="store_true")
+    ezviz_desktop_parser.add_argument("--section", choices=["preview", "playback", "messages", "terminal_config"])
     ezviz_desktop_parser.add_argument("--observe", action="store_true")
+    ezviz_desktop_parser.add_argument("--debug", action="store_true")
+    ezviz_desktop_parser.add_argument("--debug-log-path")
+
+    ezviz_desktop_agent_parser = subparsers.add_parser(
+        "ezviz-desktop-agent",
+        help="Run a Qwen tool-calling conversational agent for ESEzvizClient",
+    )
+    ezviz_desktop_agent_parser.add_argument("--exe-path", default=DEFAULT_EZVIZ_CLIENT_EXE)
+    ezviz_desktop_agent_parser.add_argument("--qwen-model")
+    ezviz_desktop_agent_parser.add_argument("--qwen-base-url")
+    ezviz_desktop_agent_parser.add_argument("--verbose", action="store_true")
+    ezviz_desktop_agent_parser.add_argument("--debug", action="store_true")
+    ezviz_desktop_agent_parser.add_argument("--debug-log-path")
 
     return parser
 
@@ -258,10 +312,22 @@ def main() -> None:
                 headless=args.headless or not args.desktop_chrome,
                 max_steps=args.max_steps,
                 ezviz_exe_path=args.ezviz_exe_path,
+                qwen_model=args.qwen_model,
+                qwen_base_url=args.qwen_base_url,
             )
         )
     elif args.command == "ezviz-desktop":
-        asyncio.run(ezviz_desktop(args.exe_path, args.open_video_monitor, args.observe))
+        debug_logger = create_debug_logger(args.debug, args.debug_log_path)
+        asyncio.run(ezviz_desktop(args.exe_path, args.open_video_monitor, args.observe, args.section, debug_logger))
+    elif args.command == "ezviz-desktop-agent":
+        debug_logger = create_debug_logger(args.debug, args.debug_log_path)
+        run_desktop_ezviz_repl(
+            exe_path=args.exe_path,
+            qwen_model=args.qwen_model,
+            qwen_base_url=args.qwen_base_url,
+            verbose=args.verbose,
+            debug_logger=debug_logger,
+        )
 
 
 if __name__ == "__main__":
