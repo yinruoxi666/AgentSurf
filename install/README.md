@@ -1,50 +1,90 @@
-# AgentSurf Install Commands
+# AgentSurf Windows Deployment
 
-This folder contains installation commands for AgentSurf and OpenClaw ACP
-integration.
+This folder contains the PowerShell deployment entrypoint for installing
+AgentSurf on another Windows machine after the repository has already been
+copied, unzipped, or cloned there.
 
-## What It Installs
+## Requirements
 
-- AgentSurf editable package.
-- Browser server dependencies: FastAPI, Uvicorn, Playwright.
-- Qwen/OpenAI-compatible SDK dependency: OpenAI Python SDK.
-- Windows desktop automation dependencies: pywinauto, pyautogui, psutil.
-- `agentsurf` CLI entry point.
+- Windows PowerShell.
+- Python or Conda is already installed.
+- The AgentSurf repository is already present on the target machine.
+- Optional for desktop/browser workflows: Chrome, OpenClaw, and ESEzvizClient.
 
-It does not install Python, OpenClaw, Chrome, or Playwright bundled browsers.
-The default browser path assumes you already have desktop Chrome installed.
+The installer does not install Python, Git, Chrome, OpenClaw, ESEzvizClient, or
+Playwright bundled browsers.
 
-## Usage
+## Install
 
-Run from PowerShell after activating the Python or Conda environment you want to
-use:
-
-```powershell
-.\install\install-agent.ps1
-```
-
-If `python` is not on `PATH`, the script falls back to
-`.\.conda\agentsurf\python.exe` when it exists. You can also pass an explicit
-interpreter:
-
-```powershell
-.\install\install-agent.ps1 -PythonPath ".\.conda\agentsurf\python.exe"
-```
-
-If script execution is blocked by Windows policy for this terminal session:
+Open PowerShell in the AgentSurf repository root:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install\install-agent.ps1
 ```
 
+The script looks for Python in this order:
+
+1. The explicit `-PythonPath` argument.
+2. `python` on `PATH`.
+3. `.\.conda\agentsurf\python.exe` inside this repository.
+
+To use a specific interpreter:
+
+```powershell
+.\install\install-agent.ps1 -PythonPath ".\.conda\agentsurf\python.exe"
+```
+
+The script installs AgentSurf with:
+
+```powershell
+python -m pip install --no-cache-dir -e ".[server,qwen,desktop]"
+```
+
+It also verifies:
+
+```powershell
+python -m agentsurf.cli acp --help
+python -m agentsurf.cli ezviz-agent --help
+python -m agentsurf.cli ezviz-desktop --help
+python -m agentsurf.cli ezviz-desktop-agent --help
+```
+
 Close any running `agentsurf.exe` or OpenClaw-launched AgentSurf process before
 running the installer. Windows cannot replace `agentsurf.exe` while it is in
 use.
 
+## EZVIZ Desktop Agent
+
+Set the Qwen API key in the same PowerShell session:
+
+```powershell
+$env:PYTHONUTF8="1"
+$env:DASHSCOPE_API_KEY="your-dashscope-api-key"
+```
+
+Start the desktop EZVIZ agent:
+
+```powershell
+python -m agentsurf.cli ezviz-desktop-agent --exe-path "C:\Program Files (x86)\ESEzvizClient\ESEzvizClient.exe" --debug
+```
+
+For one-shot navigation:
+
+```powershell
+python -m agentsurf.cli ezviz-desktop --section playback --exe-path "C:\Program Files (x86)\ESEzvizClient\ESEzvizClient.exe" --debug
+```
+
+The desktop visual confirmation colors can be adjusted in:
+
+```text
+config\ezviz_desktop\visual_confirmation.json
+```
+
 ## OpenClaw ACP Command
 
-Use this command in OpenClaw's custom ACP agent configuration:
+Use this command in OpenClaw's custom ACP agent configuration, replacing the
+repository path if needed:
 
 ```json
 {
@@ -69,34 +109,23 @@ If `agentsurf.exe` is on `PATH`, the command can be shortened to:
     "acp",
     "--desktop-chrome",
     "--chrome-path",
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "--ezviz-exe-path",
+    "C:\\Program Files (x86)\\ESEzvizClient\\ESEzvizClient.exe"
   ]
 }
 ```
 
-## Optional Qwen Environment
+## Optional Browser Install
 
-Set these only when you want normal Qwen chat/routing features:
+If you need Playwright's bundled Chromium instead of local Chrome:
 
 ```powershell
-$env:DASHSCOPE_API_KEY="your-dashscope-api-key"
-$env:QWEN_MODEL="qwen-plus"
-$env:QWEN_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+python -m playwright install chromium
 ```
-
-`QWEN_MODEL` and `QWEN_BASE_URL` are optional because AgentSurf has defaults.
 
 ## Verification
 
 ```powershell
-agentsurf acp --help
-agentsurf ezviz-agent --help
-agentsurf ezviz-desktop --help
 python -m unittest discover -s tests -v
-```
-
-If you need Playwright's bundled browser instead of local Chrome:
-
-```powershell
-python -m playwright install chromium
 ```

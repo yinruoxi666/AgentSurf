@@ -22,6 +22,10 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 Set-Location $RepoRoot
 
+if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
+    throw "AgentSurf repository root was not found. Run this script from the copied/cloned AgentSurf repository."
+}
+
 if (-not $PythonPath) {
     $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
     if ($PythonCommand) {
@@ -81,8 +85,14 @@ Write-Host "Verifying AgentSurf CLI commands..."
 Invoke-Checked $PythonPath "-m" "agentsurf.cli" "acp" "--help"
 Invoke-Checked $PythonPath "-m" "agentsurf.cli" "ezviz-agent" "--help"
 Invoke-Checked $PythonPath "-m" "agentsurf.cli" "ezviz-desktop" "--help"
+Invoke-Checked $PythonPath "-m" "agentsurf.cli" "ezviz-desktop-agent" "--help"
 
 Write-Host ""
 Write-Host "AgentSurf installation is complete."
 Write-Host "This script does not install Python, OpenClaw, Chrome, or Playwright bundled browsers."
 Write-Host "If you need Playwright's bundled browser later, run: python -m playwright install chromium"
+Write-Host ""
+Write-Host "Example EZVIZ desktop agent startup:"
+Write-Host '  $env:PYTHONUTF8="1"'
+Write-Host '  $env:DASHSCOPE_API_KEY="your-dashscope-api-key"'
+Write-Host "  & `"$PythonPath`" -m agentsurf.cli ezviz-desktop-agent --exe-path `"C:\Program Files (x86)\ESEzvizClient\ESEzvizClient.exe`" --debug"
