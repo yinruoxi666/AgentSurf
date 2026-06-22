@@ -354,6 +354,7 @@ def run_desktop_ezviz_repl(
     qwen_base_url: str | None,
     verbose: bool,
     debug_logger: DebugLogger | None = None,
+    visual_config_path: str | None = None,
 ) -> None:
     if debug_logger is not None:
         debug_logger.log(
@@ -363,10 +364,15 @@ def run_desktop_ezviz_repl(
                 "qwen_model": qwen_model,
                 "qwen_base_url": qwen_base_url,
                 "verbose": verbose,
+                "visual_config_path": visual_config_path,
             },
         )
     runtime = DesktopEzvizAgentRuntime(
-        tools=DesktopEzvizClientTools(exe_path=exe_path, debug_logger=debug_logger),
+        tools=DesktopEzvizClientTools(
+            exe_path=exe_path,
+            debug_logger=debug_logger,
+            visual_config_path=visual_config_path,
+        ),
         qwen=QwenClient(model=qwen_model, base_url=qwen_base_url),
         verbose=verbose,
         debug_logger=debug_logger,

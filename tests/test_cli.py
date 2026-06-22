@@ -17,6 +17,8 @@ class CliParserTest(unittest.TestCase):
                 "--debug",
                 "--debug-log-path",
                 ".runtime/debug/custom.jsonl",
+                "--visual-config-path",
+                "config/ezviz_desktop/custom.json",
                 "--observe",
             ]
         )
@@ -24,6 +26,7 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.command, "ezviz-desktop")
         self.assertTrue(args.debug)
         self.assertEqual(args.debug_log_path, ".runtime/debug/custom.jsonl")
+        self.assertEqual(args.visual_config_path, "config/ezviz_desktop/custom.json")
 
     def test_ezviz_desktop_agent_debug_flags_parse(self) -> None:
         args = build_parser().parse_args(
@@ -32,6 +35,8 @@ class CliParserTest(unittest.TestCase):
                 "--debug",
                 "--debug-log-path",
                 ".runtime/debug/agent.jsonl",
+                "--visual-config-path",
+                "config/ezviz_desktop/agent.json",
                 "--verbose",
             ]
         )
@@ -39,6 +44,7 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.command, "ezviz-desktop-agent")
         self.assertTrue(args.debug)
         self.assertEqual(args.debug_log_path, ".runtime/debug/agent.jsonl")
+        self.assertEqual(args.visual_config_path, "config/ezviz_desktop/agent.json")
         self.assertTrue(args.verbose)
 
 

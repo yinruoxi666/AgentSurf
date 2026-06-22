@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from ..debug_logging import DebugLogger
@@ -76,6 +78,32 @@ VIDEO_MONITOR_SECTION_NAMES = {
     "terminal_config": "\u7ec8\u7aef\u914d\u7f6e",
 }
 
+VIDEO_MONITOR_SECTION_COORDINATES = {
+    "preview": (35, 140),
+    "playback": (35, 250),
+    "messages": (35, 360),
+    "terminal_config": (35, 475),
+}
+
+DEFAULT_VISUAL_CONFIRMATION_CONFIG_PATH = Path("config") / "ezviz_desktop" / "visual_confirmation.json"
+
+DEFAULT_VISUAL_CONFIRMATION_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "selected_rgb": [97, 134, 255],
+    "unselected_rgb": [118, 126, 153],
+    "selected_tolerance": 55,
+    "unselected_tolerance": 45,
+    "min_selected_ratio": 0.08,
+    "min_selected_margin": 0.04,
+    "post_click_delay_ms": 500,
+    "regions": {
+        "preview": [10, 128, 62, 174],
+        "playback": [10, 234, 62, 282],
+        "messages": [10, 350, 62, 394],
+        "terminal_config": [10, 454, 66, 520],
+    },
+}
+
 EZVIZ_DESKTOP_CONTEXT_HINTS = [
     "\u8424\u77f3",
     "\u5de5\u4f5c\u5ba4",
@@ -148,6 +176,84 @@ class DesktopToolResult:
         }
 
 
+@dataclass(frozen=True)
+class VisualConfirmationConfig:
+    enabled: bool
+    selected_rgb: tuple[int, int, int]
+    unselected_rgb: tuple[int, int, int]
+    selected_tolerance: int
+    unselected_tolerance: int
+    min_selected_ratio: float
+    min_selected_margin: float
+    post_click_delay_ms: int
+    regions: dict[str, tuple[int, int, int, int]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "VisualConfirmationConfig":
+        regions = data.get("regions") or {}
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            selected_rgb=_rgb_tuple(data.get("selected_rgb"), "selected_rgb"),
+            unselected_rgb=_rgb_tuple(data.get("unselected_rgb"), "unselected_rgb"),
+            selected_tolerance=int(data.get("selected_tolerance", 55)),
+            unselected_tolerance=int(data.get("unselected_tolerance", 45)),
+            min_selected_ratio=float(data.get("min_selected_ratio", 0.08)),
+            min_selected_margin=float(data.get("min_selected_margin", 0.04)),
+            post_click_delay_ms=int(data.get("post_click_delay_ms", 500)),
+            regions={section: _region_tuple(value, section) for section, value in regions.items()},
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "selected_rgb": list(self.selected_rgb),
+            "unselected_rgb": list(self.unselected_rgb),
+            "selected_tolerance": self.selected_tolerance,
+            "unselected_tolerance": self.unselected_tolerance,
+            "min_selected_ratio": self.min_selected_ratio,
+            "min_selected_margin": self.min_selected_margin,
+            "post_click_delay_ms": self.post_click_delay_ms,
+            "regions": {section: list(region) for section, region in self.regions.items()},
+        }
+
+
+def load_visual_confirmation_config(path: str | Path | None = None) -> VisualConfirmationConfig:
+    merged = {
+        **DEFAULT_VISUAL_CONFIRMATION_CONFIG,
+        "regions": dict(DEFAULT_VISUAL_CONFIRMATION_CONFIG["regions"]),
+    }
+    config_path = Path(path) if path is not None else DEFAULT_VISUAL_CONFIRMATION_CONFIG_PATH
+    if config_path.exists():
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"Visual confirmation config must be a JSON object: {config_path}")
+        for key, value in raw.items():
+            if key == "regions" and isinstance(value, dict):
+                merged["regions"] = {**merged["regions"], **value}
+            else:
+                merged[key] = value
+    return VisualConfirmationConfig.from_dict(merged)
+
+
+def _rgb_tuple(value: Any, key: str) -> tuple[int, int, int]:
+    if not isinstance(value, list | tuple) or len(value) != 3:
+        raise ValueError(f"{key} must be a three-item RGB array")
+    return (int(value[0]), int(value[1]), int(value[2]))
+
+
+def _region_tuple(value: Any, section: str) -> tuple[int, int, int, int]:
+    if not isinstance(value, list | tuple) or len(value) != 4:
+        raise ValueError(f"Visual confirmation region for {section} must be [left, top, right, bottom]")
+    left, top, right, bottom = (int(value[0]), int(value[1]), int(value[2]), int(value[3]))
+    if right <= left or bottom <= top:
+        raise ValueError(f"Visual confirmation region for {section} must have positive width and height")
+    return left, top, right, bottom
+
+
+def _color_distance_squared(left: tuple[int, int, int], right: tuple[int, int, int]) -> int:
+    return sum((left[index] - right[index]) ** 2 for index in range(3))
+
+
 def snapshot_debug_summary(snapshot: DesktopWindowSnapshot, max_controls: int = 30) -> dict[str, Any]:
     return {
         "title": snapshot.title,
@@ -175,12 +281,18 @@ class DesktopEzvizBackend(Protocol):
     def click_first_text(self, window: Any, labels: list[str]) -> str | None:
         ...
 
+    def click_relative_point(self, window: Any, x: int, y: int) -> dict[str, int]:
+        ...
+
+    def capture_window_image(self, window: Any) -> Any:
+        ...
+
 
 class PywinautoEzvizBackend:
     def __init__(self, debug_logger: DebugLogger | None = None) -> None:
         self.debug_logger = debug_logger
         try:
-            from pywinauto import Application, Desktop
+            from pywinauto import Application, Desktop, mouse
             from pywinauto.findwindows import ElementNotFoundError
         except ModuleNotFoundError as exc:
             raise RuntimeError(
@@ -189,6 +301,7 @@ class PywinautoEzvizBackend:
             ) from exc
         self.Application = Application
         self.Desktop = Desktop
+        self.mouse = mouse
         self.ElementNotFoundError = ElementNotFoundError
         self.app: Any | None = None
         self.window: Any | None = None
@@ -408,6 +521,61 @@ class PywinautoEzvizBackend:
         self._debug("desktop_backend.click_first_text.not_found", {"labels": labels})
         return None
 
+    def click_relative_point(self, window: Any, x: int, y: int) -> dict[str, int]:
+        rect = window.rectangle()
+        screen_x = int(rect.left) + int(x)
+        screen_y = int(rect.top) + int(y)
+        point = {"x": screen_x, "y": screen_y}
+        self._debug(
+            "desktop_backend.click_relative_point",
+            {
+                "relative_point": {"x": x, "y": y},
+                "screen_point": point,
+                "window_rect": {
+                    "left": rect.left,
+                    "top": rect.top,
+                    "right": rect.right,
+                    "bottom": rect.bottom,
+                },
+            },
+        )
+        self.mouse.click(button="left", coords=(screen_x, screen_y))
+        return point
+
+    def capture_window_image(self, window: Any) -> Any:
+        try:
+            image = window.capture_as_image()
+            self._debug(
+                "desktop_backend.capture_window_image.capture_as_image",
+                {"size": list(getattr(image, "size", []))},
+            )
+            return image.convert("RGB") if hasattr(image, "convert") else image
+        except Exception as exc:
+            self._debug(
+                "desktop_backend.capture_window_image.capture_as_image_failed",
+                {"error_type": type(exc).__name__, "error": str(exc)},
+            )
+
+        try:
+            import pyautogui
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("pyautogui is required for fallback ESEzvizClient screenshot capture.") from exc
+
+        rect = window.rectangle()
+        left = int(rect.left)
+        top = int(rect.top)
+        width = int(rect.right) - left
+        height = int(rect.bottom) - top
+        image = pyautogui.screenshot(region=(left, top, width, height))
+        self._debug(
+            "desktop_backend.capture_window_image.screenshot",
+            {
+                "window_rect": {"left": left, "top": top, "right": int(rect.right), "bottom": int(rect.bottom)},
+                "size": list(getattr(image, "size", [])),
+            },
+        )
+        return image.convert("RGB") if hasattr(image, "convert") else image
+
     def _debug(self, event: str, data: Any | None = None) -> None:
         if self.debug_logger is not None:
             self.debug_logger.log(event, data)
@@ -440,6 +608,8 @@ class DesktopEzvizClientTools:
         backend: DesktopEzvizBackend | None = None,
         timeout: float = 20,
         debug_logger: DebugLogger | None = None,
+        visual_config_path: str | Path | None = None,
+        visual_confirmation_config: VisualConfirmationConfig | None = None,
     ) -> None:
         self.exe_path = exe_path
         self.process_name = process_name
@@ -447,6 +617,16 @@ class DesktopEzvizClientTools:
         self.backend = backend or PywinautoEzvizBackend(debug_logger=debug_logger)
         self.timeout = timeout
         self.window: Any | None = None
+        self.visual_config_path = Path(visual_config_path) if visual_config_path is not None else DEFAULT_VISUAL_CONFIRMATION_CONFIG_PATH
+        self.visual_confirmation_config = visual_confirmation_config or load_visual_confirmation_config(self.visual_config_path)
+        self._debug(
+            "desktop_tools.visual_confirmation.config",
+            {
+                "path": str(self.visual_config_path),
+                "path_exists": self.visual_config_path.exists(),
+                "config": self.visual_confirmation_config.to_dict(),
+            },
+        )
 
     def open_client(self) -> DesktopToolResult:
         self._debug("desktop_tools.open_client.start", {"exe_path": self.exe_path, "process_name": self.process_name})
@@ -623,6 +803,14 @@ class DesktopEzvizClientTools:
 
             monitor_result = self.open_video_monitor()
             if monitor_result.status != "ok":
+                if monitor_result.status == "not_found":
+                    fallback_result = self._click_video_monitor_section_by_coordinates(
+                        window,
+                        snapshot,
+                        normalized_section,
+                    )
+                    if fallback_result is not None:
+                        return fallback_result
                 monitor_result.data = {
                     **monitor_result.data,
                     "tool_name": "open_video_monitor_section",
@@ -726,6 +914,240 @@ class DesktopEzvizClientTools:
                 "page_confirmed": self._video_monitor_page_hint(snapshot) is not None,
             },
         )
+
+    def _coordinate_fallback_allowed(self, snapshot: DesktopWindowSnapshot, section: str) -> tuple[bool, str | None]:
+        if section not in VIDEO_MONITOR_SECTION_COORDINATES:
+            return False, "unsupported_section"
+        if snapshot.title != "ESEzvizClient":
+            return False, "unexpected_window_title"
+        rect = self._window_rect_from_snapshot(snapshot)
+        if rect is None:
+            return False, "missing_window_rect"
+        width = rect["right"] - rect["left"]
+        height = rect["bottom"] - rect["top"]
+        if width < 900 or height < 600:
+            return False, "window_too_small"
+        if len(snapshot.controls) != 0:
+            return False, "uia_controls_available"
+        return True, None
+
+    def _click_video_monitor_section_by_coordinates(
+        self,
+        window: Any,
+        snapshot: DesktopWindowSnapshot,
+        section: str,
+    ) -> DesktopToolResult | None:
+        allowed, reason = self._coordinate_fallback_allowed(snapshot, section)
+        rect = self._window_rect_from_snapshot(snapshot)
+        relative_x, relative_y = VIDEO_MONITOR_SECTION_COORDINATES.get(section, (0, 0))
+        debug_data = {
+            "section": section,
+            "relative_point": {"x": relative_x, "y": relative_y},
+            "window_rect": rect,
+            "control_count": len(snapshot.controls),
+            "window_title": snapshot.title,
+        }
+        if not allowed:
+            self._debug(
+                "desktop_tools.coordinate_fallback.rejected",
+                {**debug_data, "reason": reason},
+            )
+            return None
+
+        self._debug("desktop_tools.coordinate_fallback.eligible", debug_data)
+        try:
+            screen_point = self.backend.click_relative_point(window, relative_x, relative_y)
+        except Exception as exc:
+            self._debug(
+                "desktop_tools.coordinate_fallback.result",
+                {
+                    **debug_data,
+                    "status": "error",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            return self._result_from_exception(exc)
+
+        click_data = {**debug_data, "screen_point": screen_point}
+        self._debug("desktop_tools.coordinate_fallback.click", click_data)
+        updated_snapshot = self.backend.snapshot(window)
+        page_confirmed = self._video_monitor_page_hint(updated_snapshot) is not None
+        section_confirmed = self._video_monitor_section_hint(updated_snapshot, section)
+        visual_result: dict[str, Any] | None = None
+        if not (page_confirmed and section_confirmed):
+            visual_result = self._confirm_video_monitor_section_visually(window, section)
+        visual_confirmed = bool(visual_result and visual_result.get("confirmed"))
+        status = "ok" if (page_confirmed and section_confirmed) or visual_confirmed else "not_confirmed"
+        self._debug(
+            "desktop_tools.coordinate_fallback.result",
+            {
+                **click_data,
+                "status": status,
+                "page_confirmed": page_confirmed,
+                "section_confirmed": section_confirmed,
+                "visual_confirmed": visual_confirmed,
+            },
+        )
+        if status == "ok":
+            confirmation = "visual confirmation" if visual_confirmed else "UIA confirmation"
+            message = (
+                f"Opened ESEzvizClient video monitor section by coordinate fallback "
+                f"({confirmation}): {VIDEO_MONITOR_SECTION_NAMES[section]}."
+            )
+        else:
+            message = (
+                f"Clicked ESEzvizClient section {VIDEO_MONITOR_SECTION_NAMES[section]} by coordinate fallback, "
+                "but could not confirm the target video monitor section."
+            )
+        result_data: dict[str, Any] = {
+            "tool_name": "open_video_monitor_section",
+            "section": section,
+            "fallback": "coordinate",
+            "relative_point": {"x": relative_x, "y": relative_y},
+            "screen_point": screen_point,
+            "window_rect": rect,
+            "page_confirmed": page_confirmed,
+            "section_confirmed": section_confirmed,
+            "visual_confirmed": visual_confirmed,
+        }
+        if visual_result is not None:
+            result_data["visual_confirmation"] = visual_result
+        if visual_confirmed:
+            result_data["confirmation"] = "visual_nav_active_color"
+        return self._result_from_snapshot(
+            status,
+            message,
+            updated_snapshot,
+            data=result_data,
+        )
+
+    def _confirm_video_monitor_section_visually(self, window: Any, section: str) -> dict[str, Any]:
+        config = self.visual_confirmation_config
+        config_data = config.to_dict()
+        if not config.enabled:
+            result = {"confirmed": False, "section": section, "reason": "disabled"}
+            self._debug("desktop_tools.visual_confirmation.result", {**result, "config": config_data})
+            return result
+
+        if section not in config.regions:
+            result = {"confirmed": False, "section": section, "reason": "missing_section_region"}
+            self._debug("desktop_tools.visual_confirmation.result", {**result, "config": config_data})
+            return result
+
+        if config.post_click_delay_ms > 0:
+            time.sleep(config.post_click_delay_ms / 1000)
+
+        try:
+            image = self.backend.capture_window_image(window)
+            image = image.convert("RGB") if hasattr(image, "convert") else image
+            image_size = list(getattr(image, "size", []))
+            self._debug(
+                "desktop_tools.visual_confirmation.capture",
+                {"section": section, "image_size": image_size},
+            )
+        except Exception as exc:
+            result = {
+                "confirmed": False,
+                "section": section,
+                "reason": "capture_failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+            self._debug("desktop_tools.visual_confirmation.result", {**result, "config": config_data})
+            return result
+
+        scores = self._score_visual_nav_regions(image, config)
+        target_score = scores.get(section)
+        best_section = max(scores, key=lambda name: scores[name]["selected_ratio"]) if scores else None
+        best_other_ratio = max(
+            (score["selected_ratio"] for name, score in scores.items() if name != section),
+            default=0.0,
+        )
+        selected_ratio = float(target_score["selected_ratio"]) if target_score is not None else 0.0
+        selected_margin = selected_ratio - best_other_ratio
+        confirmed = (
+            target_score is not None
+            and best_section == section
+            and selected_ratio >= config.min_selected_ratio
+            and selected_margin >= config.min_selected_margin
+        )
+        reason = "confirmed" if confirmed else "score_below_threshold"
+        result = {
+            "confirmed": confirmed,
+            "section": section,
+            "reason": reason,
+            "best_section": best_section,
+            "selected_ratio": round(selected_ratio, 6),
+            "selected_margin": round(selected_margin, 6),
+            "scores": scores,
+            "image_size": image_size,
+            "thresholds": {
+                "min_selected_ratio": config.min_selected_ratio,
+                "min_selected_margin": config.min_selected_margin,
+            },
+        }
+        self._debug("desktop_tools.visual_confirmation.score", result)
+        self._debug("desktop_tools.visual_confirmation.result", result)
+        return result
+
+    def _score_visual_nav_regions(self, image: Any, config: VisualConfirmationConfig) -> dict[str, dict[str, Any]]:
+        scores: dict[str, dict[str, Any]] = {}
+        image_width, image_height = getattr(image, "size", (0, 0))
+        for section, region in config.regions.items():
+            left, top, right, bottom = region
+            clipped = {
+                "left": max(0, left),
+                "top": max(0, top),
+                "right": min(int(image_width), right),
+                "bottom": min(int(image_height), bottom),
+            }
+            if clipped["right"] <= clipped["left"] or clipped["bottom"] <= clipped["top"]:
+                scores[section] = {
+                    "region": list(region),
+                    "clipped_region": clipped,
+                    "selected_ratio": 0.0,
+                    "unselected_ratio": 0.0,
+                    "pixel_count": 0,
+                }
+                continue
+
+            crop = image.crop((clipped["left"], clipped["top"], clipped["right"], clipped["bottom"]))
+            selected_count = 0
+            unselected_count = 0
+            pixel_count = 0
+            for pixel in crop.getdata():
+                rgb = (int(pixel[0]), int(pixel[1]), int(pixel[2]))
+                pixel_count += 1
+                if _color_distance_squared(rgb, config.selected_rgb) <= config.selected_tolerance**2:
+                    selected_count += 1
+                if _color_distance_squared(rgb, config.unselected_rgb) <= config.unselected_tolerance**2:
+                    unselected_count += 1
+            scores[section] = {
+                "region": list(region),
+                "clipped_region": clipped,
+                "selected_ratio": round(selected_count / pixel_count, 6) if pixel_count else 0.0,
+                "unselected_ratio": round(unselected_count / pixel_count, 6) if pixel_count else 0.0,
+                "pixel_count": pixel_count,
+            }
+        return scores
+
+    def _window_rect_from_snapshot(self, snapshot: DesktopWindowSnapshot) -> dict[str, int] | None:
+        value = snapshot.metadata.get("window_rect")
+        if not isinstance(value, dict):
+            return None
+        try:
+            rect = {
+                "left": int(value["left"]),
+                "top": int(value["top"]),
+                "right": int(value["right"]),
+                "bottom": int(value["bottom"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+        if rect["right"] <= rect["left"] or rect["bottom"] <= rect["top"]:
+            return None
+        return rect
 
     def _result_from_snapshot(
         self,

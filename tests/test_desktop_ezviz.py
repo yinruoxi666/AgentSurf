@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agentsurf.tools.desktop_ezviz import (
+    DEFAULT_VISUAL_CONFIRMATION_CONFIG,
+    DEFAULT_VISUAL_CONFIRMATION_CONFIG_PATH,
     DEFAULT_EZVIZ_CLIENT_EXE,
     DesktopControl,
     DesktopEzvizClientTools,
     DesktopToolResult,
     DesktopWindowSnapshot,
     PywinautoEzvizBackend,
+    VisualConfirmationConfig,
     detect_ezviz_desktop_tool,
     is_ezviz_desktop_request,
+    load_visual_confirmation_config,
 )
 
 
@@ -24,12 +30,16 @@ class FakeDesktopBackend:
         snapshot: DesktopWindowSnapshot | list[DesktopWindowSnapshot],
         *,
         matched_control: str | None = None,
+        capture_image=None,
     ) -> None:
         self.snapshots = snapshot if isinstance(snapshot, list) else [snapshot]
         self.snapshot_index = 0
         self.matched_control = matched_control
+        self.capture_image = capture_image
+        self.capture_calls = 0
         self.connect_calls = 0
         self.clicked_labels: list[str] = []
+        self.relative_clicks: list[dict[str, int]] = []
         self.exe_paths: list[str] = []
         self.process_names: list[str] = []
 
@@ -49,6 +59,25 @@ class FakeDesktopBackend:
         self.clicked_labels = labels
         return self.matched_control
 
+    def click_relative_point(self, window, x: int, y: int) -> dict[str, int]:
+        rect = None
+        for snapshot in self.snapshots:
+            value = snapshot.metadata.get("window_rect")
+            if isinstance(value, dict):
+                rect = value
+                break
+        left = int(rect["left"]) if rect is not None else 0
+        top = int(rect["top"]) if rect is not None else 0
+        click = {"x": x, "y": y, "screen_x": left + x, "screen_y": top + y}
+        self.relative_clicks.append(click)
+        return {"x": left + x, "y": top + y}
+
+    def capture_window_image(self, window):
+        self.capture_calls += 1
+        if self.capture_image is None:
+            raise RuntimeError("No fake screenshot configured")
+        return self.capture_image
+
 
 class FailingDesktopBackend:
     def connect_or_start(self, exe_path: str, process_name: str, timeout: float):
@@ -59,6 +88,12 @@ class FailingDesktopBackend:
 
     def click_first_text(self, window, labels: list[str]) -> str | None:
         return None
+
+    def click_relative_point(self, window, x: int, y: int) -> dict[str, int]:
+        return {"x": x, "y": y}
+
+    def capture_window_image(self, window):
+        raise RuntimeError("No fake screenshot configured")
 
 
 class FakeDebugLogger:
@@ -93,6 +128,52 @@ class FakeWindow:
         return self.rect
 
 
+class FakeCrop:
+    def __init__(self, image, box: tuple[int, int, int, int]) -> None:
+        self.image = image
+        self.box = box
+        self.size = (box[2] - box[0], box[3] - box[1])
+
+    def getdata(self):
+        left, top, right, bottom = self.box
+        for y in range(top, bottom):
+            for x in range(left, right):
+                yield self.image.pixel(x, y)
+
+
+class FakeRgbImage:
+    def __init__(
+        self,
+        *,
+        size: tuple[int, int] = (1366, 768),
+        regions: dict[str, tuple[int, int, int, int]] | None = None,
+        active_section: str | None = None,
+        selected_rgb: tuple[int, int, int] = (97, 134, 255),
+        unselected_rgb: tuple[int, int, int] = (118, 126, 153),
+    ) -> None:
+        self.size = size
+        self.regions = regions or {
+            section: tuple(region)
+            for section, region in DEFAULT_VISUAL_CONFIRMATION_CONFIG["regions"].items()
+        }
+        self.active_section = active_section
+        self.selected_rgb = selected_rgb
+        self.unselected_rgb = unselected_rgb
+
+    def convert(self, mode: str):
+        return self
+
+    def crop(self, box: tuple[int, int, int, int]) -> FakeCrop:
+        return FakeCrop(self, box)
+
+    def pixel(self, x: int, y: int) -> tuple[int, int, int]:
+        for section, region in self.regions.items():
+            left, top, right, bottom = region
+            if left <= x < right and top <= y < bottom:
+                return self.selected_rgb if section == self.active_section else self.unselected_rgb
+        return (255, 255, 255)
+
+
 def video_monitor_page_snapshot() -> DesktopWindowSnapshot:
     return DesktopWindowSnapshot(
         title="ESEzvizClient",
@@ -117,7 +198,71 @@ def compact_video_monitor_page_snapshot() -> DesktopWindowSnapshot:
     )
 
 
+def inaccessible_uia_video_monitor_snapshot(
+    *,
+    title: str = "ESEzvizClient",
+    width: int = 1366,
+    height: int = 768,
+    include_rect: bool = True,
+) -> DesktopWindowSnapshot:
+    metadata = {"backend": "uia", "automation_accessible": True}
+    if include_rect:
+        metadata["window_rect"] = {"left": 250, "top": 120, "right": 250 + width, "bottom": 120 + height}
+    return DesktopWindowSnapshot(title=title, controls=[], metadata=metadata)
+
+
+def fast_visual_config(**overrides) -> VisualConfirmationConfig:
+    data = {
+        **DEFAULT_VISUAL_CONFIRMATION_CONFIG,
+        "regions": dict(DEFAULT_VISUAL_CONFIRMATION_CONFIG["regions"]),
+        "post_click_delay_ms": 0,
+    }
+    for key, value in overrides.items():
+        if key == "regions":
+            data["regions"] = {**data["regions"], **value}
+        else:
+            data[key] = value
+    return VisualConfirmationConfig.from_dict(data)
+
+
 class DesktopEzvizClientToolsTest(unittest.TestCase):
+    def test_visual_confirmation_default_config_file_loads(self) -> None:
+        config = load_visual_confirmation_config(DEFAULT_VISUAL_CONFIRMATION_CONFIG_PATH)
+
+        self.assertTrue(config.enabled)
+        self.assertEqual(config.selected_rgb, (97, 134, 255))
+        self.assertEqual(config.unselected_rgb, (118, 126, 153))
+        self.assertEqual(config.regions["messages"], (10, 350, 62, 394))
+
+    def test_visual_confirmation_missing_config_uses_built_in_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = load_visual_confirmation_config(Path(temp_dir) / "missing.json")
+
+        self.assertTrue(config.enabled)
+        self.assertEqual(config.selected_rgb, (97, 134, 255))
+        self.assertEqual(config.regions["preview"], (10, 128, 62, 174))
+
+    def test_visual_confirmation_custom_config_path_overrides_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "visual.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "selected_rgb": [1, 2, 3],
+                        "min_selected_ratio": 0.2,
+                        "regions": {"messages": [1, 2, 3, 4]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_visual_confirmation_config(path)
+
+        self.assertEqual(config.selected_rgb, (1, 2, 3))
+        self.assertEqual(config.unselected_rgb, (118, 126, 153))
+        self.assertEqual(config.min_selected_ratio, 0.2)
+        self.assertEqual(config.regions["messages"], (1, 2, 3, 4))
+
     def test_open_client_connects_or_starts_default_exe(self) -> None:
         backend = FakeDesktopBackend(DesktopWindowSnapshot(title="EZVIZ", controls=[]))
         tools = DesktopEzvizClientTools(backend=backend)
@@ -306,6 +451,8 @@ class DesktopEzvizClientToolsTest(unittest.TestCase):
         self.assertTrue(result.data["page_confirmed"])
         self.assertTrue(result.data["section_confirmed"])
         self.assertIn("\u56de\u653e", backend.clicked_labels)
+        self.assertEqual(backend.relative_clicks, [])
+        self.assertEqual(backend.capture_calls, 0)
 
     def test_open_video_monitor_section_uses_existing_compact_page_nav(self) -> None:
         backend = FakeDesktopBackend(
@@ -348,6 +495,203 @@ class DesktopEzvizClientToolsTest(unittest.TestCase):
 
         self.assertEqual(result.status, "error")
         self.assertIn("supported_sections", result.data)
+        self.assertEqual(backend.relative_clicks, [])
+
+    def test_open_video_monitor_section_uses_coordinate_fallback_when_uia_is_empty(self) -> None:
+        debug = FakeDebugLogger()
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+                video_monitor_page_snapshot(),
+            ]
+        )
+        tools = DesktopEzvizClientTools(backend=backend, debug_logger=debug)
+
+        result = tools.open_video_monitor_section("playback")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.data["fallback"], "coordinate")
+        self.assertEqual(result.data["relative_point"], {"x": 35, "y": 250})
+        self.assertEqual(result.data["screen_point"], {"x": 285, "y": 370})
+        self.assertEqual(backend.relative_clicks, [{"x": 35, "y": 250, "screen_x": 285, "screen_y": 370}])
+        self.assertIn("desktop_tools.coordinate_fallback.eligible", debug.events)
+        self.assertIn("desktop_tools.coordinate_fallback.click", debug.events)
+        self.assertIn("desktop_tools.coordinate_fallback.result", debug.events)
+
+    def test_open_video_monitor_section_coordinate_mapping(self) -> None:
+        cases = {
+            "preview": {"x": 35, "y": 140, "screen_x": 285, "screen_y": 260},
+            "messages": {"x": 35, "y": 360, "screen_x": 285, "screen_y": 480},
+            "terminal_config": {"x": 35, "y": 475, "screen_x": 285, "screen_y": 595},
+        }
+        for section, expected_click in cases.items():
+            with self.subTest(section=section):
+                backend = FakeDesktopBackend(
+                    [
+                        inaccessible_uia_video_monitor_snapshot(),
+                        inaccessible_uia_video_monitor_snapshot(),
+                        inaccessible_uia_video_monitor_snapshot(),
+                    ]
+                )
+                tools = DesktopEzvizClientTools(backend=backend)
+                tools.visual_confirmation_config = fast_visual_config()
+
+                result = tools.open_video_monitor_section(section)
+
+                self.assertEqual(result.status, "not_confirmed")
+                self.assertEqual(result.data["fallback"], "coordinate")
+                self.assertEqual(backend.relative_clicks, [expected_click])
+
+    def test_open_video_monitor_section_coordinate_fallback_returns_not_confirmed_without_uia_confirmation(self) -> None:
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+            ]
+        )
+        tools = DesktopEzvizClientTools(backend=backend, visual_confirmation_config=fast_visual_config())
+
+        result = tools.open_video_monitor_section("playback")
+
+        self.assertEqual(result.status, "not_confirmed")
+        self.assertEqual(result.data["fallback"], "coordinate")
+        self.assertFalse(result.data["page_confirmed"])
+        self.assertFalse(result.data["section_confirmed"])
+
+    def test_open_video_monitor_section_visual_confirmation_returns_ok_when_target_is_blue(self) -> None:
+        debug = FakeDebugLogger()
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+            ],
+            capture_image=FakeRgbImage(active_section="messages"),
+        )
+        tools = DesktopEzvizClientTools(
+            backend=backend,
+            debug_logger=debug,
+            visual_confirmation_config=fast_visual_config(),
+        )
+
+        result = tools.open_video_monitor_section("messages")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.data["confirmation"], "visual_nav_active_color")
+        self.assertTrue(result.data["visual_confirmed"])
+        self.assertEqual(result.data["visual_confirmation"]["best_section"], "messages")
+        self.assertIn("desktop_tools.visual_confirmation.capture", debug.events)
+        self.assertIn("desktop_tools.visual_confirmation.score", debug.events)
+        self.assertIn("desktop_tools.visual_confirmation.result", debug.events)
+
+    def test_open_video_monitor_section_visual_confirmation_rejects_when_other_section_is_blue(self) -> None:
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+            ],
+            capture_image=FakeRgbImage(active_section="preview"),
+        )
+        tools = DesktopEzvizClientTools(
+            backend=backend,
+            visual_confirmation_config=fast_visual_config(),
+        )
+
+        result = tools.open_video_monitor_section("messages")
+
+        self.assertEqual(result.status, "not_confirmed")
+        self.assertFalse(result.data["visual_confirmed"])
+        self.assertEqual(result.data["visual_confirmation"]["best_section"], "preview")
+
+    def test_visual_confirmation_thresholds_distinguish_selected_and_unselected_colors(self) -> None:
+        backend = FakeDesktopBackend(
+            inaccessible_uia_video_monitor_snapshot(),
+            capture_image=FakeRgbImage(active_section="messages"),
+        )
+        tools = DesktopEzvizClientTools(backend=backend, visual_confirmation_config=fast_visual_config())
+        image = backend.capture_window_image({"window": "fake"})
+
+        scores = tools._score_visual_nav_regions(image, tools.visual_confirmation_config)
+
+        self.assertGreater(scores["messages"]["selected_ratio"], 0.9)
+        self.assertLess(scores["preview"]["selected_ratio"], 0.01)
+        self.assertGreater(scores["preview"]["unselected_ratio"], 0.9)
+
+    def test_open_video_monitor_section_visual_confirmation_capture_failure_stays_not_confirmed(self) -> None:
+        debug = FakeDebugLogger()
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+                inaccessible_uia_video_monitor_snapshot(),
+            ]
+        )
+        tools = DesktopEzvizClientTools(
+            backend=backend,
+            debug_logger=debug,
+            visual_confirmation_config=fast_visual_config(),
+        )
+
+        result = tools.open_video_monitor_section("playback")
+
+        self.assertEqual(result.status, "not_confirmed")
+        self.assertFalse(result.data["visual_confirmed"])
+        self.assertEqual(result.data["visual_confirmation"]["reason"], "capture_failed")
+        self.assertIn("desktop_tools.visual_confirmation.result", debug.events)
+
+    def test_open_video_monitor_section_rejects_coordinate_fallback_without_window_rect(self) -> None:
+        debug = FakeDebugLogger()
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(include_rect=False),
+                inaccessible_uia_video_monitor_snapshot(include_rect=False),
+            ]
+        )
+        tools = DesktopEzvizClientTools(backend=backend, debug_logger=debug)
+
+        result = tools.open_video_monitor_section("playback")
+
+        self.assertEqual(result.status, "not_found")
+        self.assertEqual(backend.relative_clicks, [])
+        rejected = next(record for record in debug.records if record["event"] == "desktop_tools.coordinate_fallback.rejected")
+        self.assertEqual(rejected["data"]["reason"], "missing_window_rect")
+
+    def test_open_video_monitor_section_rejects_coordinate_fallback_for_small_window(self) -> None:
+        debug = FakeDebugLogger()
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(width=800, height=500),
+                inaccessible_uia_video_monitor_snapshot(width=800, height=500),
+            ]
+        )
+        tools = DesktopEzvizClientTools(backend=backend, debug_logger=debug)
+
+        result = tools.open_video_monitor_section("playback")
+
+        self.assertEqual(result.status, "not_found")
+        self.assertEqual(backend.relative_clicks, [])
+        rejected = next(record for record in debug.records if record["event"] == "desktop_tools.coordinate_fallback.rejected")
+        self.assertEqual(rejected["data"]["reason"], "window_too_small")
+
+    def test_open_video_monitor_section_rejects_coordinate_fallback_for_other_window_title(self) -> None:
+        debug = FakeDebugLogger()
+        backend = FakeDesktopBackend(
+            [
+                inaccessible_uia_video_monitor_snapshot(title="OtherApp"),
+                inaccessible_uia_video_monitor_snapshot(title="OtherApp"),
+            ]
+        )
+        tools = DesktopEzvizClientTools(backend=backend, debug_logger=debug)
+
+        result = tools.open_video_monitor_section("playback")
+
+        self.assertEqual(result.status, "not_found")
+        self.assertEqual(backend.relative_clicks, [])
+        rejected = next(record for record in debug.records if record["event"] == "desktop_tools.coordinate_fallback.rejected")
+        self.assertEqual(rejected["data"]["reason"], "unexpected_window_title")
 
     def test_debug_logs_one_shot_tool_input_snapshot_and_result(self) -> None:
         debug = FakeDebugLogger()

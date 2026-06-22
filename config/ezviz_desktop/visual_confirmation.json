@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "selected_rgb": [97, 134, 255],
+  "unselected_rgb": [118, 126, 153],
+  "selected_tolerance": 55,
+  "unselected_tolerance": 45,
+  "min_selected_ratio": 0.08,
+  "min_selected_margin": 0.04,
+  "post_click_delay_ms": 500,
+  "regions": {
+    "preview": [10, 128, 62, 174],
+    "playback": [10, 234, 62, 282],
+    "messages": [10, 350, 62, 394],
+    "terminal_config": [10, 454, 66, 520]
+  }
+}
